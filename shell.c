@@ -2,37 +2,44 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <unistd.h>
+#include <linux/limits.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
-#define assert(_e, _c, ...) if(!(_e)) { fprintf(stderr, __VA_ARGS__, __FILE__, __LINE__, _c); exit(_c);}
+#define assert(_e, _c) if(!(_e)) { \
+  fprintf(stderr, "Exit code: %d - %s:%d", _c, __FILE__, __LINE__); \
+  exit(_c);\
+}
 
-#define BUFSIZE 1024
+#define BUFSIZE 8192
 
 enum {
   EXIT_MALLOC,
   EXIT_REALLOC,
   EXIT_FORK,
+  EXIT_WAITPID,
 };
-
 
 static char *readInput(void);
 static void execCommand(char **args);
+static int otherCommands(char **args);
+static void generateStatus(void);
 static void shellLoop(void);
 
-char *readInput(void) {
+static char *
+readInput(void) {
   int bufsize = BUFSIZE;
   int pos = 0;
   int c;
 
   char *mes = malloc(sizeof(char) * BUFSIZE);
-  assert(mes, EXIT_MALLOC, "%s:%d: malloc, %d\n");
+  assert(mes, EXIT_MALLOC);
   while((c = getchar()) != '\n') {
     if(pos >= bufsize) {
       bufsize += BUFSIZE;
 
       mes = realloc(mes, sizeof(char) * bufsize);
-      assert(mes, EXIT_REALLOC, "%s:%d: realloc, %d\n");
+      assert(mes, EXIT_REALLOC);
     }
 
     mes[pos++] = c;
@@ -42,13 +49,14 @@ char *readInput(void) {
   return mes;
 }
 
-char **readArgs(char *mes) {
+static char **
+readArgs(char *mes) {
   const char *delim = " \n\t";
   int bufsize = BUFSIZE;
   int pos = 0;
 
   char **args = malloc(sizeof(char *) * BUFSIZE);
-  assert(args, EXIT_MALLOC, "%s:%d: malloc, %d\n");
+  assert(args, EXIT_MALLOC);
 
   char *arg = strtok(mes, delim);
   while(arg) {
@@ -56,7 +64,7 @@ char **readArgs(char *mes) {
       bufsize += BUFSIZE;
 
       args = realloc(args, sizeof(char *) * bufsize);
-      assert(args, EXIT_REALLOC, "%s:%d: realloc, %d\n");
+      assert(args, EXIT_REALLOC);
     }
 
     args[pos++] = arg;
@@ -67,40 +75,75 @@ char **readArgs(char *mes) {
   return args;
 }
 
-void execCommand(char **args) {
+static int
+otherCommands(char **args) {
+  if(!strcmp(args[0], "/usr/bin/cd")) {
+    chdir(args[1]);
+    return 0;
+  } else if(!strcmp(args[0], "/usr/bin/echo")) {
+    /* check if any of the args[i] starts with $
+       if yes getenv(args[i]) without the $      */
+  }
+
+  return -1;
+}
+
+static void
+execCommand(char **args) {
   if(!args[0]) return;
 
-  char *buf = malloc(sizeof(char) * (strlen(args[0]) + 10));
+  char *buf = malloc(sizeof(char) * (strlen(args[0]) + strlen("/usr/bin/")));
   char *command = args[0];
 
+  int pid, wpid;
+  int status;
+
+  /* needs upgrade - reading from env */
   sprintf(buf, "/usr/bin/%s", args[0]);
   args[0] = buf;
 
-  int pid, wpid;
-  pid = fork();
+  if((pid = fork()) == 0) {
+    if(otherCommands(args) == -1 && execv(args[0], args) == -1)
+      fprintf(stderr, "shell: unkown command: %s\n", command);
 
-  if(pid == 0) {
-    if(!strcmp(args[0], "/usr/bin/cd"));
-    else if(execv(args[0], args)) {
-      fprintf(stderr, "shell: unknown command: %s\n", command);
-    }
     exit(0);
   } else if(pid == -1) {
-    exit(1);
+    assert(NULL, EXIT_FORK);
   } else {
-    if(!strcmp(args[0], "/usr/bin/cd")) {
-      chdir("~/.");
-    }
-    int status;
+    otherCommands(args);
     do {
       wpid = waitpid(pid, &status, WUNTRACED);
+      assert(wpid != -1, EXIT_WAITPID);
     } while(!WIFEXITED(status) && !WIFSIGNALED(status));
   }
+
+  free(buf);
 }
 
-void shellLoop(void) {
+static void
+generateStatus(void) {
+  const char *delim = "/";
+  char *cwd = malloc(sizeof(char) * PATH_MAX);
+  char *lastDir = NULL;
+
+  assert(cwd, EXIT_MALLOC);
+  getcwd(cwd, PATH_MAX);
+
+  char *p = strtok(cwd, delim);
+  while(p) {
+    lastDir = p;
+
+    p = strtok(NULL, delim);
+  }
+
+  printf("%s:%s $ ", getlogin(), lastDir ? lastDir : "/");
+  free(cwd);
+}
+
+static void
+shellLoop(void) {
   while(1) {
-    printf("frank $ ");
+    generateStatus();
 
     char *mes = readInput();
     char **args = readArgs(mes);
@@ -111,7 +154,8 @@ void shellLoop(void) {
   }
 }
 
-int main() {
+int
+main() {
   printf("\033[2J\033[H");
   shellLoop();
   return 0;
